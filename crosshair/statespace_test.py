@@ -5,16 +5,18 @@ import z3  # type: ignore
 
 from crosshair.core import Patched, proxy_for_type
 from crosshair.statespace import (
+    CallAnalysis,
     HeapRef,
     RootNode,
     SimpleStateSpace,
     SnapshotRef,
     StateSpace,
     StateSpaceContext,
+    VerificationStatus,
     model_value_to_python,
 )
-from crosshair.tracers import COMPOSITE_TRACER
-from crosshair.util import UnknownSatisfiability
+from crosshair.tracers import COMPOSITE_TRACER, NoTracing, ResumedTracing
+from crosshair.util import IgnoreAttempt, UnknownSatisfiability
 
 _HEAD_SNAPSHOT = SnapshotRef(-1)
 
@@ -90,6 +92,102 @@ def test_model_value_to_python_ArithRef():
     print("type(rt2)", type(rt2))
     assert type(rt2) == z3.ArithRef
     model_value_to_python(rt2)
+
+
+def test_warm_start_choice_sequence():
+    """
+    A warm-started iteration should steer user-code branches toward a supplied
+    concrete value without collapsing the search tree. Subsequent unseeded
+    iterations must traverse the recorded tree without ``NotDeterministic``
+    and naturally explore the sibling branches the seed left unvisited.
+    """
+    search_root = RootNode()
+    branches_reached = set()
+
+    with COMPOSITE_TRACER, NoTracing():
+        for itr in range(1, 10):
+            space = StateSpace(
+                time.monotonic() + 30.0, 3.0, search_root=search_root
+            )
+            try:
+                with Patched(), StateSpaceContext(space):
+                    if itr == 1:
+                        space.set_choice_hints([5])
+                    n = proxy_for_type(int, "n")
+                    if itr == 1:
+                        assert space.apply_next_hint(n) is True
+                    with ResumedTracing():
+                        if n > 10:
+                            branches_reached.add("gt")
+                        else:
+                            branches_reached.add("le")
+                        space.detach_path()
+            except IgnoreAttempt:
+                pass
+            space.bubble_status(CallAnalysis(VerificationStatus.CONFIRMED))
+            if search_root.child.is_exhausted():
+                break
+
+    assert "le" in branches_reached
+    assert "gt" in branches_reached
+    assert search_root.child.is_exhausted()
+
+
+def test_warm_start_does_not_taint_followup_iterations():
+    """
+    The seed's effect must not leak into the solver assertions of later
+    iterations. Running an unseeded iteration after a warm-started one must
+    be free to choose any value -- not forced to remain consistent with the
+    seed.
+    """
+    search_root = RootNode()
+    realized_after_seed = []
+
+    with COMPOSITE_TRACER, NoTracing():
+        # Iteration 1: seed n=5 and drive the program into `n <= 10`.
+        space = StateSpace(time.monotonic() + 30.0, 3.0, search_root=search_root)
+        with Patched(), StateSpaceContext(space):
+            space.set_choice_hints([5])
+            n = proxy_for_type(int, "n")
+            assert space.apply_next_hint(n)
+            with ResumedTracing():
+                assert not (n > 10)
+                space.detach_path()
+        space.bubble_status(CallAnalysis(VerificationStatus.CONFIRMED))
+
+        # Iteration 2: no seed -- the tree forces us to the `n > 10` side
+        # because the other side is now exhausted. The solver must accept
+        # n > 10 without any lingering `n == 5` constraint.
+        space = StateSpace(time.monotonic() + 30.0, 3.0, search_root=search_root)
+        with Patched(), StateSpaceContext(space):
+            n = proxy_for_type(int, "n")
+            with ResumedTracing():
+                assert n > 10
+                realized_after_seed.append(space.find_model_value(n.var))
+                space.detach_path()
+        space.bubble_status(CallAnalysis(VerificationStatus.CONFIRMED))
+
+    # The realized value must exceed 10 (not be the seed value 5):
+    assert realized_after_seed[0] > 10
+
+
+def test_set_choice_hints_without_apply_is_noop():
+    """
+    Calling ``set_choice_hints`` but never applying a hint must not disturb
+    the search -- the iteration behaves identically to an unseeded one.
+    """
+    search_root = RootNode()
+
+    with COMPOSITE_TRACER, NoTracing():
+        space = StateSpace(time.monotonic() + 30.0, 3.0, search_root=search_root)
+        with Patched(), StateSpaceContext(space):
+            space.set_choice_hints([42])
+            n = proxy_for_type(int, "n")
+            with ResumedTracing():
+                # The decision here is oracle-driven; we just want no crash.
+                _ = bool(n > 10)
+                space.detach_path()
+        space.bubble_status(CallAnalysis(VerificationStatus.CONFIRMED))
 
 
 def test_smt_fanout(space: SimpleStateSpace):

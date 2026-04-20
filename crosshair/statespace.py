@@ -1138,6 +1138,75 @@ class StateSpace:
     def defer_assumption(self, description: str, checker: Callable[[], bool]) -> None:
         self._deferred_assumptions.append((description, checker))
 
+    def set_choice_hints(self, choices: Sequence[Any]) -> None:
+        """
+        Install a warm-start choice sequence for the current iteration.
+
+        Each subsequent call to :meth:`apply_next_hint` consumes one value from
+        ``choices`` and biases the SMT solver's decisions so that the
+        corresponding symbolic realizes to that value (when feasible).
+
+        Hints influence probabilities only -- they are NOT added to the solver
+        as permanent assertions. The search tree produced by a warm-started
+        iteration is therefore traversable by later iterations that do not
+        call any warm-start API; their unseeded SMT decisions simply follow
+        the already-recorded node structure and naturally explore the
+        still-unvisited sibling branches recorded under the seed.
+        """
+        from crosshair.pathing_oracle import ConstrainedOracle
+
+        root = self._root
+        oracle = root.pathing_oracle
+        if not isinstance(oracle, ConstrainedOracle):
+            wrapped = ConstrainedOracle(oracle)
+            # pre_path_hook has already run on the inner oracle for the
+            # current iteration, but the wrapper missed it -- initialize
+            # its state here so it's usable immediately:
+            wrapped.space = self
+            wrapped.exprs = []
+            root.pathing_oracle = wrapped
+        self._choice_hints_queue = list(choices)
+
+    def apply_next_hint(self, symbolic: Any) -> bool:
+        """
+        Consume the next warm-start hint and steer the solver toward a model
+        in which ``symbolic`` realizes to that value.
+
+        Returns ``True`` if a hint was applied; ``False`` if no hints remain
+        or the hint could not be translated to an SMT expression.
+        """
+        queue = getattr(self, "_choice_hints_queue", None)
+        if not queue:
+            return False
+        hint_value = queue.pop(0)
+        expr = self._choice_hint_to_expr(symbolic, hint_value)
+        if expr is None:
+            return False
+        from crosshair.pathing_oracle import ConstrainedOracle
+
+        oracle = self._root.pathing_oracle
+        if not isinstance(oracle, ConstrainedOracle):
+            return False
+        oracle.prefer(expr)
+        return True
+
+    def _choice_hint_to_expr(
+        self, symbolic: Any, value: Any
+    ) -> Optional[z3.ExprRef]:
+        with NoTracing():
+            var = getattr(symbolic, "var", None)
+            if not isinstance(var, z3.ExprRef):
+                return None
+            if isinstance(value, z3.ExprRef):
+                return var == value
+            coerce = getattr(type(symbolic), "_coerce_to_smt_sort", None)
+            if coerce is None:
+                return None
+            coerced = coerce(value)
+            if coerced is None:
+                return None
+            return var == coerced
+
     def extend_timeouts(
         self, constant_factor: float = 0.0, smt_multiple: Optional[float] = None
     ) -> None:
