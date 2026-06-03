@@ -6,7 +6,10 @@ Changelog
 Next Version
 ---------------
 
- * Nothing yet!
+ * Add symbolic support for ``dateutil.relativedelta``: ``date +/- relativedelta``
+   with relative year/month/day components (a "Period") now stays symbolic,
+   so CrossHair can reason about calendar arithmetic such as
+   ``date(2000, 2, 29) + relativedelta(years=1) == date(2001, 2, 28)``.
 
 
 Version 0.0.107
