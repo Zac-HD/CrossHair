@@ -103,17 +103,15 @@ def _days_before_year(year):
 
 
 def _days_in_month(year, month):
-    """year, month -> number of days in that month in that year."""
-    # NB: _DAYS_IN_MONTH[month] would also keep `month` symbolic (symbolic
-    # indexing into a concrete list is supported); this branches instead.
-    assert 1 <= month <= 12, month
-    if month >= 8:
-        return 31 if month % 2 == 0 else 30
-    else:
-        if month == 2:
-            return 28 + _is_leap_int(year)
-        else:
-            return 30 if month % 2 == 0 else 31
+    """year, month -> number of days in that month in that year.
+
+    Branch-free (no ``if``/``assert`` on ``month``) and using only arithmetic
+    plus bitwise &/| (which stay symbolic for booleans), so a symbolic month is
+    neither realized nor forked.
+    """
+    is_30 = (month == 4) | (month == 6) | (month == 9) | (month == 11)
+    is_feb = month == 2
+    return 31 - is_30 - is_feb * (3 - _is_leap_int(year))
 
 
 def _day_in_month_constraint(year, month, day):
