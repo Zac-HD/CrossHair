@@ -6,7 +6,13 @@ Changelog
 Next Version
 ---------------
 
- * Nothing yet!
+ * Keep symbolic ``date``/``datetime`` fields symbolic when constructing from
+   explicit ``year``/``month``/``day`` (e.g. ``date(y, m, d)``).  Validation
+   previously used ``bool()`` range checks that realized the fields -- collapsing
+   the date to a concrete value on every construction -- which made symbolic
+   generation (such as ``hypothesis``'s ``dates()``/``datetimes()``) pay a large,
+   super-linear cost.  Validation now forks on the solver instead, still raising
+   ``ValueError`` for genuinely-invalid dates.
 
 
 Version 0.0.107

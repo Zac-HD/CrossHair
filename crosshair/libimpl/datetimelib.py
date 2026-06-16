@@ -471,8 +471,43 @@ def _check_ints(values):
             raise TypeError
 
 
+def _require_date_field(cond, message):
+    """Require a (possibly symbolic) date-field validity condition.
+
+    Forks the solver for a symbolic condition (so the fields stay unrealized),
+    or does a plain check when it is concrete -- which happens when only some of
+    year/month/day are symbolic, e.g. ``date(2001, 2, symbolic_day)``.  Raises
+    ValueError when the condition can be false, matching the stdlib.
+    """
+    with NoTracing():
+        if isinstance(cond, bool):
+            if not cond:
+                raise ValueError(message)
+        elif not context_statespace().smt_fork(cond.var, desc="date_field_valid"):
+            raise ValueError(message)
+
+
 def _check_date_fields(year, month, day):
     _check_ints((year, month, day))
+    with NoTracing():
+        symbolic = not (type(year) is int and type(month) is int and type(day) is int)
+    if symbolic:
+        # Validate via solver forks rather than ``bool()`` checks, which would
+        # realize the (often freshly-drawn, e.g. from ``hypothesis``) fields and
+        # collapse the date to a concrete value on every construction.  Forking
+        # keeps the fields symbolic, while still raising ValueError on the
+        # invalid branch (so genuinely-invalid dates are still discovered).  The
+        # day check uses ``_day_in_month_constraint`` to avoid forking on the
+        # month/leap-year structure.
+        _require_date_field(
+            (MINYEAR <= year) & (year <= MAXYEAR) & (1 <= month) & (month <= 12),
+            "year or month is out of range",
+        )
+        _require_date_field(
+            (1 <= day) & _day_in_month_constraint(year, month, day),
+            "day is out of range for month",
+        )
+        return year, month, day
     if not MINYEAR <= year <= MAXYEAR:
         raise ValueError("year must be in %d..%d" % (MINYEAR, MAXYEAR))
     if not 1 <= month <= 12:

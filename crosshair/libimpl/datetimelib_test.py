@@ -5,7 +5,7 @@ import pytest
 
 from crosshair.core import proxy_for_type
 from crosshair.libimpl.builtinslib import make_bounded_int
-from crosshair.libimpl.datetimelib import _is_leap_int
+from crosshair.libimpl.datetimelib import MAXYEAR, MINYEAR, _is_leap_int
 from crosshair.statespace import CONFIRMED, EXEC_ERR, POST_FAIL, StateSpace
 from crosshair.test_util import check_states
 from crosshair.tracers import ResumedTracing
@@ -200,4 +200,36 @@ def test_leap_year() -> None:
     # is found but timing-sensitively (~12-22s; the per-path Z3 timeout is
     # wall-clock), which flaked across CI runners. The symbolic year still
     # exercises the date + timedelta arithmetic that crosses the calendar.
+    check_states(f, POST_FAIL)
+
+
+def test_date_constructed_from_symbolic_fields_stays_symbolic(
+    space: StateSpace,
+) -> None:
+    # Constructing date(y, m, d) from explicit symbolic fields must validate the
+    # fields without realizing them: validation forks on the solver instead of
+    # using bool() range checks (which would pin the date to a concrete value on
+    # every construction).  Both leap/common years and multiple months stay
+    # reachable afterwards.
+    year = make_bounded_int("yr", MINYEAR, MAXYEAR)
+    month = make_bounded_int("mo", 1, 12)
+    with ResumedTracing():
+        d = datetime.date(year, month, 15)  # day 15 is valid in every month
+        assert space.is_possible(d.year == 2000)  # leap reachable
+        assert space.is_possible(d.year == 2001)  # common reachable
+        assert space.is_possible(d.month == 2)
+        assert space.is_possible(d.month == 11)
+
+
+def test_date_from_symbolic_fields_rejects_invalid_day() -> None:
+    # The fork-based validation still raises ValueError for genuinely-invalid
+    # dates -- e.g. Feb 29 in a non-leap year -- rather than silently accepting.
+    def f(day: int) -> datetime.date:
+        """
+        pre: 1 <= day <= 31
+        post: _.day != 28
+        raises: ValueError
+        """
+        return datetime.date(2001, 2, day)  # 2001 is not a leap year
+
     check_states(f, POST_FAIL)
